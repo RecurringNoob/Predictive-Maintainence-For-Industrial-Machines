@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL + TimescaleDB ─────────────────────────────────────────────────
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: maintenance
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d maintenance"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override DB URL to use the compose service name
+      DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/maintenance
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount ML artefacts so you can swap them without rebuilding the image
+      - ./backend/ml:/app/ml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── React frontend (dev server with HMR) ─────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/v1
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

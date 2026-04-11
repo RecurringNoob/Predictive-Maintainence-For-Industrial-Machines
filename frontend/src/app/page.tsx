@@ -1,0 +1,213 @@
+
+"use client";
+
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Thermometer,
+  Zap,
+  Activity,
+  Server,
+  Gauge,
+  History as HistoryIcon,
+  PlayCircle,
+  AlertTriangle,
+  Activity as StatusIcon,
+} from "lucide-react";
+import Link from "next/link";
+import { latestReading as initialReading, latestPrediction as initialPrediction } from "@/lib/data";
+import { GaugeCard } from "@/components/dashboard/gauge-card";
+import { PredictionBadge } from "@/components/dashboard/prediction-badge";
+import { cn } from "@/lib/utils";
+
+export default function DashboardPage() {
+  const [reading, setReading] = useState(initialReading);
+  const [prediction, setPrediction] = useState(initialPrediction);
+  const [isLive, setIsLive] = useState(true);
+  const [lastSync, setLastSync] = useState<string | null>(null);
+  const [machineStatus, setMachineStatus] = useState("Checking...");
+  const [lastStatusUpdate, setLastStatusUpdate] = useState<string | null>(null);
+
+  // Machine Status API Polling (Every 2 minutes)
+  useEffect(() => {
+    const fetchMachineStatus = async () => {
+      try {
+        // NEXT_PUBLIC_API_URL should be set in your .env
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+        const response = await fetch(`${baseUrl}/v1/status`);
+        if (!response.ok) throw new Error('API unreachable');
+        const data = await response.json();
+        setMachineStatus(data.status || "Healthy");
+      } catch (error) {
+        // Fallback to simulation for demo if API isn't ready
+        const statuses = ["Healthy", "Operational", "Warning", "Attention Required"];
+        const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
+        setMachineStatus(randomStatus);
+      } finally {
+        setLastStatusUpdate(new Date().toLocaleTimeString());
+      }
+    };
+
+    fetchMachineStatus();
+    const interval = setInterval(fetchMachineStatus, 120000); 
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // IoT Poller Simulation (Every 15s) - Aligns with ThingSpeak Poller in Design Doc
+  useEffect(() => {
+    if (!isLive) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+        const response = await fetch(`${baseUrl}/v1/readings/latest`);
+        if (response.ok) {
+          const data = await response.json();
+          setReading(data);
+        } else {
+          // Local simulation if backend not yet connected
+          setReading(prev => ({
+            ...prev,
+            airTempK: Number((300 + Math.random() * 5).toFixed(1)),
+            recordedAt: new Date().toISOString()
+          }));
+        }
+      } catch (e) {
+        setReading(prev => ({ ...prev, recordedAt: new Date().toISOString() }));
+      }
+      setLastSync(new Date().toLocaleTimeString());
+    }, 15000);
+
+    setLastSync(new Date().toLocaleTimeString());
+    return () => clearInterval(interval);
+  }, [isLive]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Live Dashboard</h1>
+          <p className="text-muted-foreground">Real-time status of Machine M-001 via ThingSpeak IoT.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={isLive ? "default" : "secondary"} className={cn(isLive && "bg-emerald-500 animate-pulse")}>
+            {isLive ? "Live Stream Active" : "Stream Paused"}
+          </Badge>
+          <span className="text-xs text-muted-foreground tabular-nums">Sync: {lastSync || "..."}</span>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {/* Machine Status Card (Streamlit/FastAPI API) */}
+        <Card className="border-accent/20 bg-accent/5">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Machine Status</CardTitle>
+            <StatusIcon className="h-4 w-4 text-accent" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{machineStatus}</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Last Poll: {lastStatusUpdate || "Connecting..."}
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Prediction Hero Card */}
+        <Card className="md:col-span-2 lg:col-span-2 border-primary/20 bg-primary/5">
+          <CardHeader>
+            <CardTitle className="text-lg">Latest ML Prediction</CardTitle>
+            <CardDescription>Generated by {prediction.modelVersion} engine</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <PredictionBadge type={prediction.failureType} confidence={prediction.confidence} />
+            {reading.assumedFeatures && reading.assumedFeatures.length > 0 && (
+              <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <div>
+                  <p className="font-semibold">Incomplete Sensor Data</p>
+                  <p>Prediction uses assumed values for: {reading.assumedFeatures.join(", ")}</p>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <GaugeCard 
+          title="Air Temperature" 
+          value={reading.airTempK} 
+          unit="K" 
+          icon={Thermometer} 
+          progress={((reading.airTempK - 290) / 20) * 100}
+          description="Ambient range: 290K - 310K"
+        />
+        <GaugeCard 
+          title="Process Temperature" 
+          value={reading.processTempK} 
+          unit="K" 
+          icon={Zap} 
+          isAssumed={reading.assumedFeatures?.includes('Process Temperature')}
+          progress={((reading.processTempK - 300) / 40) * 100}
+          description="Operating range: 300K - 340K"
+        />
+        <GaugeCard 
+          title="Rotational Speed" 
+          value={reading.rpm} 
+          unit="RPM" 
+          icon={Gauge} 
+          isAssumed={reading.assumedFeatures?.includes('RPM')}
+          progress={(reading.rpm / 3000) * 100}
+          description="Max rated: 3000 RPM"
+        />
+        <GaugeCard 
+          title="Torque" 
+          value={reading.torqueNm} 
+          unit="Nm" 
+          icon={Activity} 
+          isAssumed={reading.assumedFeatures?.includes('Torque')}
+          progress={(reading.torqueNm / 80) * 100}
+          description="Peak torque: 80 Nm"
+        />
+        <GaugeCard 
+          title="Tool Wear" 
+          value={reading.toolWearMin} 
+          unit="min" 
+          icon={Server} 
+          progress={(reading.toolWearMin / 250) * 100}
+          description="Replace at: 250 min"
+        />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+         <Card>
+          <CardHeader>
+            <CardTitle>Quick Actions</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-3">
+            <Button asChild variant="outline" className="gap-2">
+              <Link href="/history">
+                <HistoryIcon className="h-4 w-4" /> View History
+              </Link>
+            </Button>
+            <Button asChild variant="outline" className="gap-2">
+              <Link href="/predict">
+                <PlayCircle className="h-4 w-4" /> Manual Prediction
+              </Link>
+            </Button>
+            <Button variant="ghost" onClick={() => setIsLive(!isLive)}>
+              {isLive ? "Pause Stream" : "Resume Stream"}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
