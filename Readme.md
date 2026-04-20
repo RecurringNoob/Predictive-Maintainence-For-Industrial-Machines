@@ -18,8 +18,7 @@
 - [Hardware Setup](#hardware-setup)
 - [Testing](#testing)
 - [Deployment](#deployment)
-- [Team](#team)
-- [Roadmap](#roadmap)
+
 
 ---
 
