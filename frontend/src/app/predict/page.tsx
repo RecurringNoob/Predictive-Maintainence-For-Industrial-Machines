@@ -9,54 +9,48 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { PredictionBadge } from "@/components/dashboard/prediction-badge";
 import { FailureType, MachineType } from "@/lib/types";
-
+import { runManualPrediction } from "@/lib/api";
 export default function ManualPredictPage() {
   const [result, setResult] = useState<{ type: FailureType; conf: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handlePredict = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setIsLoading(true);
+ const handlePredict = async (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
+  setIsLoading(true);
 
-    const formData = new FormData(e.currentTarget);
-    const payload = {
-      machineType: formData.get('type'),
-      airTempK: Number(formData.get('air')),
-      processTempK: Number(formData.get('proc')),
+  const formData = new FormData(e.currentTarget);
+
+  try {
+    const result = await runManualPrediction({
+      machine_type: formData.get('type') as MachineType,
+      air_temp_k: Number(formData.get('air')),
+      process_temp_k: Number(formData.get('proc')),
       rpm: Number(formData.get('rpm')),
-      torqueNm: Number(formData.get('torque')),
-      toolWearMin: Number(formData.get('wear'))
-    };
+      torque_nm: Number(formData.get('torque')),
+      tool_wear_min: Number(formData.get('wear')),
+      source: 'manual',
+    });
 
-    try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
-      const response = await fetch(`${baseUrl}/v1/predict`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+    if (result) {
+      setResult({
+        type: result.prediction.failureType,
+        conf: result.prediction.confidence,
       });
-
-      if (response.ok) {
-        const data = await response.json();
-        setResult({
-          type: data.prediction.failureType,
-          conf: data.prediction.confidence
-        });
-      } else {
-        throw new Error('Prediction failed');
-      }
-    } catch (error) {
-      // Simulation fallback
-      setTimeout(() => {
-        setResult({
-          type: Math.random() > 0.8 ? 'Heat Dissipation Failure' : 'No Failure',
-          conf: 0.85 + Math.random() * 0.14
-        });
-      }, 500);
-    } finally {
-      setIsLoading(false);
+    } else {
+      throw new Error('Prediction failed');
     }
-  };
+  } catch {
+    // Simulation fallback
+    setTimeout(() => {
+      setResult({
+        type: Math.random() > 0.8 ? 'Heat Dissipation Failure' : 'No Failure',
+        conf: 0.85 + Math.random() * 0.14,
+      });
+    }, 500);
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
