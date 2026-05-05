@@ -1,10 +1,8 @@
 from collections.abc import AsyncGenerator
 import logging
-
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -55,10 +53,16 @@ async def init_db() -> None:
     PostgreSQL), and silently skipped on managed databases like Neon that don't
     support it. Plain PostgreSQL works fine for typical sensor ingestion volumes.
     """
+
+    # Step 1: Create all ORM tables — own transaction, auto-commits on exit.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    logger.info("ORM tables created / confirmed.")
 
-        if not _is_sqlite:
+    # Step 2: TimescaleDB — isolated connection so a failure here cannot
+    # poison the connection used for indexes below.
+    if not _is_sqlite:
+        async with engine.connect() as conn:
             try:
                 await conn.execute(
                     text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
@@ -69,16 +73,18 @@ async def init_db() -> None:
                         "if_not_exists => TRUE);"
                     )
                 )
+                await conn.commit()
                 logger.info("TimescaleDB hypertable enabled for sensor_readings.")
             except Exception as exc:
-                # TimescaleDB not available (e.g. Neon, standard RDS) —
-                # plain PostgreSQL indexes are sufficient for this workload.
+                await conn.rollback()  # clear the aborted transaction before closing
                 logger.info(
                     "TimescaleDB not available (%s). "
                     "Continuing with standard PostgreSQL.",
                     exc,
                 )
 
+    # Step 3: Plain indexes — fresh connection, always clean state.
+    async with engine.begin() as conn:
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_sensor_readings_recorded_at "
@@ -91,4 +97,4 @@ async def init_db() -> None:
                 "ON predictions (predicted_at DESC);"
             )
         )
-        logger.info("Database tables and indexes ready.")
+    logger.info("Database tables and indexes ready.")
