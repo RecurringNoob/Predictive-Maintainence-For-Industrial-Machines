@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+import logging
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -6,6 +7,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 _is_sqlite = settings.database_url.startswith("sqlite")
@@ -49,23 +51,34 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create tables on startup. TimescaleDB extensions only run on PostgreSQL."""
+    """Create tables on startup. TimescaleDB is used when available (self-hosted
+    PostgreSQL), and silently skipped on managed databases like Neon that don't
+    support it. Plain PostgreSQL works fine for typical sensor ingestion volumes.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
         if not _is_sqlite:
-            # Enable TimescaleDB extension (no-op if already enabled)
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"))
-
-            # Create hypertable — idempotent: if_not_exists=true
-            await conn.execute(
-                text(
-                    "SELECT create_hypertable('sensor_readings', 'recorded_at', "
-                    "if_not_exists => TRUE);"
+            try:
+                await conn.execute(
+                    text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
                 )
-            )
+                await conn.execute(
+                    text(
+                        "SELECT create_hypertable('sensor_readings', 'recorded_at', "
+                        "if_not_exists => TRUE);"
+                    )
+                )
+                logger.info("TimescaleDB hypertable enabled for sensor_readings.")
+            except Exception as exc:
+                # TimescaleDB not available (e.g. Neon, standard RDS) —
+                # plain PostgreSQL indexes are sufficient for this workload.
+                logger.info(
+                    "TimescaleDB not available (%s). "
+                    "Continuing with standard PostgreSQL.",
+                    exc,
+                )
 
-        # Indexes (work on both SQLite and PostgreSQL)
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_sensor_readings_recorded_at "
@@ -78,3 +91,4 @@ async def init_db() -> None:
                 "ON predictions (predicted_at DESC);"
             )
         )
+        logger.info("Database tables and indexes ready.")

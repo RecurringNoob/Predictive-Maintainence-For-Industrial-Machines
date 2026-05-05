@@ -24,7 +24,7 @@ maintainance.db
 # misc
 .DS_Store
 *.pem
-
+venv/
 # debug
 npm-debug.log*
 yarn-debug.log*

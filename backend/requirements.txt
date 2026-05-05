@@ -32,3 +32,4 @@ aiosqlite==0.20.0             # SQLite async driver for test DB
 # ── Linting / type-checking (dev only) ───────────────────────────────────────
 ruff==0.6.9
 mypy==1.11.2
+joblib==1.4.2
