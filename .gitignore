@@ -1,7 +1,8 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+*.env
+
 
 # dependencies
-/node_modules
+*/node_modules
 /.pnp
 .pnp.*
 .yarn/*
@@ -9,17 +10,17 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
+_pycache_
 # testing
 /coverage
-
+backend/context
 # next.js
 /.next/
 /out/
-
+__pycache__/
 # production
 /build
-
+maintainance.db
 # misc
 .DS_Store
 *.pem
@@ -32,9 +33,7 @@ yarn-error.log*
 
 # vercel
 .vercel
-venv/
-backend/context
-context.md
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

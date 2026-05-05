@@ -37,6 +37,8 @@ async def _poll_once() -> None:
     reading_raw = await fetch_latest()
     if reading_raw is None:
         return
+    if reading_raw.is_stub:
+        logger.warning("Poll cycle running on stub data — ThingSpeak unavailable")
 
     # Increment simulated tool wear
     _tool_wear_min = (_tool_wear_min + _TOOL_WEAR_INCREMENT) % _TOOL_WEAR_RESET_THRESHOLD
@@ -53,7 +55,15 @@ async def _poll_once() -> None:
     )
 
     ml = get_ml_service()
-    result = ml.predict(create_schema)
+    result = ml.predict(
+        machine_type=create_schema.machine_type,
+        air_temp_k=create_schema.air_temp_k,
+        process_temp_k=create_schema.process_temp_k,
+        rotational_speed_rpm=create_schema.rpm,
+        torque_nm=create_schema.torque_nm,
+        tool_wear_min=create_schema.tool_wear_min,
+    )
+    # result is a dict: {"failure_type": ..., "confidence": ..., "assumed_features": [...]}
 
     async with AsyncSessionLocal() as session:
         # Persist reading
@@ -73,9 +83,9 @@ async def _poll_once() -> None:
         # Persist prediction
         db_prediction = Prediction(
             reading_id=db_reading.id,
-            failure_type=result.failure_type,
-            confidence=result.confidence,
-            model_version=result.model_version,
+            failure_type=result["failure_type"],
+            confidence=result["confidence"],
+            model_version=settings.model_version,
         )
         session.add(db_prediction)
         await session.commit()
@@ -86,8 +96,8 @@ async def _poll_once() -> None:
         "Poll complete | air=%.1fK | wear=%.0f min | → %s (%.2f)",
         create_schema.air_temp_k,
         create_schema.tool_wear_min,
-        result.failure_type,
-        result.confidence,
+        result["failure_type"],
+        result["confidence"],
     )
 
     # Broadcast via SSE

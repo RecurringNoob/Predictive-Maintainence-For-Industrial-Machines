@@ -4,7 +4,7 @@ uvicorn[standard]==0.30.6
 
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy==2.0.35
-asyncpg==0.29.0               # async PostgreSQL driver
+asyncpg==0.30.0              # async PostgreSQL driver
 alembic==1.13.2               # DB migrations (future use)
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -18,8 +18,8 @@ httpx==0.27.2
 apscheduler==3.10.4
 
 # ── ML ────────────────────────────────────────────────────────────────────────
-scikit-learn==1.5.2
-numpy==1.26.4
+scikit-learn==1.6.1
+numpy==2.2.5
 pandas==2.2.3
 
 # ── Testing ───────────────────────────────────────────────────────────────────

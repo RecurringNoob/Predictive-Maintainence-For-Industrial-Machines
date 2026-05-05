@@ -13,7 +13,7 @@ class PredictionResponse(BaseModel):
     confidence: float | None
     model_version: str
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "protected_namespaces": ()}
 
 
 class PredictionListResponse(BaseModel):

@@ -8,8 +8,9 @@ from fastapi.responses import JSONResponse
 from config import get_settings
 from database import init_db
 from routers import predictions_router, readings_router, stream_router
+from routers.status import router as status_router  # ← add this
 from services.iot_poller import create_scheduler
-from services.ml_service import get_ml_service
+from services.ml_service import init_ml_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +27,10 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     logger.info("Loading ML model (version=%s)...", settings.model_version)
-    get_ml_service()  # validates model + scaler files exist; raises early if not
+    init_ml_service(
+        model_path=settings.model_path,
+        scaler_path=settings.scaler_path,
+    )
 
     logger.info("Starting IoT poller (interval=%ds)...", settings.poll_interval_seconds)
     scheduler = create_scheduler()
@@ -64,6 +68,7 @@ API_PREFIX = "/v1"
 app.include_router(readings_router, prefix=API_PREFIX)
 app.include_router(predictions_router, prefix=API_PREFIX)
 app.include_router(stream_router, prefix=API_PREFIX)
+app.include_router(status_router, prefix=API_PREFIX)  # ← add this
 
 
 # ── Global exception handler ─────────────────────────────────────────────────

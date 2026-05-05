@@ -8,13 +8,24 @@ from config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    echo=False,
-)
+_is_sqlite = settings.database_url.startswith("sqlite")
+
+if _is_sqlite:
+    from sqlalchemy.pool import StaticPool
+    engine = create_async_engine(
+        settings.database_url,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        echo=False,
+    )
+else:
+    engine = create_async_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        echo=False,
+    )
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
@@ -38,22 +49,23 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create tables and TimescaleDB hypertable on startup."""
+    """Create tables on startup. TimescaleDB extensions only run on PostgreSQL."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        # Enable TimescaleDB extension (no-op if already enabled)
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"))
+        if not _is_sqlite:
+            # Enable TimescaleDB extension (no-op if already enabled)
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"))
 
-        # Create hypertable — idempotent: if_not_exists=true
-        await conn.execute(
-            text(
-                "SELECT create_hypertable('sensor_readings', 'recorded_at', "
-                "if_not_exists => TRUE);"
+            # Create hypertable — idempotent: if_not_exists=true
+            await conn.execute(
+                text(
+                    "SELECT create_hypertable('sensor_readings', 'recorded_at', "
+                    "if_not_exists => TRUE);"
+                )
             )
-        )
 
-        # Indexes
+        # Indexes (work on both SQLite and PostgreSQL)
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_sensor_readings_recorded_at "

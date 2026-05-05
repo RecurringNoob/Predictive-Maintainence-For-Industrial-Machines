@@ -1,7 +1,6 @@
-
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Card,
   CardContent,
@@ -21,93 +20,186 @@ import {
   PlayCircle,
   AlertTriangle,
   Activity as StatusIcon,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import Link from "next/link";
-import { latestReading as initialReading, latestPrediction as initialPrediction } from "@/lib/data";
+import {
+  latestReading as initialReading,
+  latestPrediction as initialPrediction,
+} from "@/lib/data";
 import { GaugeCard } from "@/components/dashboard/gauge-card";
 import { PredictionBadge } from "@/components/dashboard/prediction-badge";
 import { cn } from "@/lib/utils";
+import {
+  connectSSE,
+  fetchLatestReading,
+  fetchLatestPrediction,
+  fetchMachineStatus,
+} from "@/lib/api";
+import type { SensorReading, Prediction } from "@/lib/types";
+
+// Assumed feature keys that come back from the backend (snake_case field names)
+const ASSUMED_FEATURE_LABELS: Record<string, string> = {
+  process_temp_k: "Process Temperature",
+  rpm: "RPM",
+  torque_nm: "Torque",
+  tool_wear_min: "Tool Wear",
+};
+
+function formatAssumedFeatures(features?: string[]): string[] {
+  if (!features) return [];
+  return features.map((f) => ASSUMED_FEATURE_LABELS[f] ?? f);
+}
 
 export default function DashboardPage() {
-  const [reading, setReading] = useState(initialReading);
-  const [prediction, setPrediction] = useState(initialPrediction);
+  const [reading, setReading] = useState<SensorReading>(initialReading);
+  const [prediction, setPrediction] = useState<Prediction>(initialPrediction);
   const [isLive, setIsLive] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
-  const [machineStatus, setMachineStatus] = useState("Checking...");
+  const [machineStatus, setMachineStatus] = useState("Connecting...");
   const [lastStatusUpdate, setLastStatusUpdate] = useState<string | null>(null);
+  const [sseError, setSseError] = useState(false);
 
-  // Machine Status API Polling (Every 2 minutes)
+  const cleanupSSE = useRef<(() => void) | null>(null);
+
+  // ── Machine Status polling (every 2 minutes) ───────────────────────────────
   useEffect(() => {
-    const fetchMachineStatus = async () => {
-      try {
-        // NEXT_PUBLIC_API_URL should be set in your .env
-        const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
-        const response = await fetch(`${baseUrl}/v1/status`);
-        if (!response.ok) throw new Error('API unreachable');
-        const data = await response.json();
-        setMachineStatus(data.status || "Healthy");
-      } catch (error) {
-        // Fallback to simulation for demo if API isn't ready
+    const poll = async () => {
+      const status = await fetchMachineStatus();
+      if (status) {
+        setMachineStatus(status);
+      } else {
+        // Simulation fallback
         const statuses = ["Healthy", "Operational", "Warning", "Attention Required"];
-        const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
-        setMachineStatus(randomStatus);
-      } finally {
-        setLastStatusUpdate(new Date().toLocaleTimeString());
+        setMachineStatus(statuses[Math.floor(Math.random() * statuses.length)]);
       }
+      setLastStatusUpdate(new Date().toLocaleTimeString());
     };
 
-    fetchMachineStatus();
-    const interval = setInterval(fetchMachineStatus, 120000); 
-
-    return () => clearInterval(interval);
+    poll();
+    const id = setInterval(poll, 120_000);
+    return () => clearInterval(id);
   }, []);
 
-  // IoT Poller Simulation (Every 15s) - Aligns with ThingSpeak Poller in Design Doc
+  // ── Seed from REST on mount so there's real data immediately ──────────────
   useEffect(() => {
-    if (!isLive) return;
+    (async () => {
+      const [r, p] = await Promise.all([
+        fetchLatestReading(),
+        fetchLatestPrediction(),
+      ]);
+      if (r) setReading(r);
+      if (p) setPrediction(p);
+      if (r || p) setLastSync(new Date().toLocaleTimeString());
+    })();
+  }, []);
 
-    const interval = setInterval(async () => {
-      try {
-        const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
-        const response = await fetch(`${baseUrl}/v1/readings/latest`);
-        if (response.ok) {
-          const data = await response.json();
-          setReading(data);
-        } else {
-          // Local simulation if backend not yet connected
-          setReading(prev => ({
-            ...prev,
-            airTempK: Number((300 + Math.random() * 5).toFixed(1)),
-            recordedAt: new Date().toISOString()
-          }));
-        }
-      } catch (e) {
-        setReading(prev => ({ ...prev, recordedAt: new Date().toISOString() }));
+  // ── SSE connection ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isLive) {
+      cleanupSSE.current?.();
+      cleanupSSE.current = null;
+      setIsConnected(false);
+      return;
+    }
+
+    const cleanup = connectSSE({
+      onReading: (r) => {
+        setReading(r);
+        setLastSync(new Date().toLocaleTimeString());
+        setIsConnected(true);
+        setSseError(false);
+      },
+      onPrediction: (p) => {
+        setPrediction(p);
+      },
+      onError: () => {
+        setIsConnected(false);
+        setSseError(true);
+        // Fall back to REST polling when SSE fails
+        startRestFallback();
+      },
+    });
+
+    cleanupSSE.current = cleanup;
+    return () => {
+      cleanup();
+      cleanupSSE.current = null;
+    };
+  }, [isLive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── REST fallback polling (only active when SSE is down) ──────────────────
+  const restFallbackRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function startRestFallback() {
+    if (restFallbackRef.current) return; // already running
+    restFallbackRef.current = setInterval(async () => {
+      const [r, p] = await Promise.all([
+        fetchLatestReading(),
+        fetchLatestPrediction(),
+      ]);
+      if (r) {
+        setReading(r);
+        setLastSync(new Date().toLocaleTimeString());
       }
-      setLastSync(new Date().toLocaleTimeString());
-    }, 15000);
+      if (p) setPrediction(p);
+    }, 15_000);
+  }
 
-    setLastSync(new Date().toLocaleTimeString());
-    return () => clearInterval(interval);
-  }, [isLive]);
+  // Clean up fallback when SSE reconnects or component unmounts
+  useEffect(() => {
+    if (!sseError && restFallbackRef.current) {
+      clearInterval(restFallbackRef.current);
+      restFallbackRef.current = null;
+    }
+  }, [sseError]);
+
+  useEffect(() => {
+    return () => {
+      if (restFallbackRef.current) clearInterval(restFallbackRef.current);
+    };
+  }, []);
+
+  const displayedAssumedFeatures = formatAssumedFeatures(reading.assumedFeatures);
 
   return (
     <div className="space-y-6">
+      {/* Header row */}
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Live Dashboard</h1>
-          <p className="text-muted-foreground">Real-time status of Machine M-001 via ThingSpeak IoT.</p>
+          <p className="text-muted-foreground">
+            Real-time status of Machine M-001 via ThingSpeak IoT.
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant={isLive ? "default" : "secondary"} className={cn(isLive && "bg-emerald-500 animate-pulse")}>
-            {isLive ? "Live Stream Active" : "Stream Paused"}
+          {/* SSE connection indicator */}
+          {isLive && (
+            <span title={isConnected ? "SSE connected" : sseError ? "SSE failed — polling" : "Connecting…"}>
+              {isConnected ? (
+                <Wifi className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <WifiOff className="h-4 w-4 text-amber-500" />
+              )}
+            </span>
+          )}
+          <Badge
+            variant={isLive ? "default" : "secondary"}
+            className={cn(isLive && isConnected && "bg-emerald-500 animate-pulse")}
+          >
+            {isLive ? (isConnected ? "Live Stream Active" : "Connecting…") : "Stream Paused"}
           </Badge>
-          <span className="text-xs text-muted-foreground tabular-nums">Sync: {lastSync || "..."}</span>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            Sync: {lastSync ?? "..."}
+          </span>
         </div>
       </div>
 
+      {/* Cards grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {/* Machine Status Card (Streamlit/FastAPI API) */}
+        {/* Machine Status */}
         <Card className="border-accent/20 bg-accent/5">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Machine Status</CardTitle>
@@ -116,78 +208,88 @@ export default function DashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{machineStatus}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              Last Poll: {lastStatusUpdate || "Connecting..."}
+              Last Poll: {lastStatusUpdate ?? "Connecting..."}
             </p>
           </CardContent>
         </Card>
 
-        {/* Prediction Hero Card */}
+        {/* Latest ML Prediction */}
         <Card className="md:col-span-2 lg:col-span-2 border-primary/20 bg-primary/5">
           <CardHeader>
             <CardTitle className="text-lg">Latest ML Prediction</CardTitle>
-            <CardDescription>Generated by {prediction.modelVersion} engine</CardDescription>
+            <CardDescription>
+              Generated by {prediction.modelVersion} engine
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <PredictionBadge type={prediction.failureType} confidence={prediction.confidence} />
-            {reading.assumedFeatures && reading.assumedFeatures.length > 0 && (
-              <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
+            <PredictionBadge
+              type={prediction.failureType}
+              confidence={prediction.confidence}
+            />
+            {displayedAssumedFeatures.length > 0 && (
+              <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs dark:bg-amber-950/30 dark:border-amber-800 dark:text-amber-400">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                 <div>
                   <p className="font-semibold">Incomplete Sensor Data</p>
-                  <p>Prediction uses assumed values for: {reading.assumedFeatures.join(", ")}</p>
+                  <p>
+                    Prediction uses assumed values for:{" "}
+                    {displayedAssumedFeatures.join(", ")}
+                  </p>
                 </div>
               </div>
             )}
           </CardContent>
         </Card>
 
-        <GaugeCard 
-          title="Air Temperature" 
-          value={reading.airTempK} 
-          unit="K" 
-          icon={Thermometer} 
+        {/* Gauge cards */}
+        <GaugeCard
+          title="Air Temperature"
+          value={reading.airTempK}
+          unit="K"
+          icon={Thermometer}
           progress={((reading.airTempK - 290) / 20) * 100}
-          description="Ambient range: 290K - 310K"
+          description="Ambient range: 290K – 310K"
         />
-        <GaugeCard 
-          title="Process Temperature" 
-          value={reading.processTempK} 
-          unit="K" 
-          icon={Zap} 
-          isAssumed={reading.assumedFeatures?.includes('Process Temperature')}
+        <GaugeCard
+          title="Process Temperature"
+          value={reading.processTempK}
+          unit="K"
+          icon={Zap}
+          isAssumed={reading.assumedFeatures?.includes("process_temp_k")}
           progress={((reading.processTempK - 300) / 40) * 100}
-          description="Operating range: 300K - 340K"
+          description="Operating range: 300K – 340K"
         />
-        <GaugeCard 
-          title="Rotational Speed" 
-          value={reading.rpm} 
-          unit="RPM" 
-          icon={Gauge} 
-          isAssumed={reading.assumedFeatures?.includes('RPM')}
+        <GaugeCard
+          title="Rotational Speed"
+          value={reading.rpm}
+          unit="RPM"
+          icon={Gauge}
+          isAssumed={reading.assumedFeatures?.includes("rpm")}
           progress={(reading.rpm / 3000) * 100}
           description="Max rated: 3000 RPM"
         />
-        <GaugeCard 
-          title="Torque" 
-          value={reading.torqueNm} 
-          unit="Nm" 
-          icon={Activity} 
-          isAssumed={reading.assumedFeatures?.includes('Torque')}
+        <GaugeCard
+          title="Torque"
+          value={reading.torqueNm}
+          unit="Nm"
+          icon={Activity}
+          isAssumed={reading.assumedFeatures?.includes("torque_nm")}
           progress={(reading.torqueNm / 80) * 100}
           description="Peak torque: 80 Nm"
         />
-        <GaugeCard 
-          title="Tool Wear" 
-          value={reading.toolWearMin} 
-          unit="min" 
-          icon={Server} 
+        <GaugeCard
+          title="Tool Wear"
+          value={reading.toolWearMin}
+          unit="min"
+          icon={Server}
           progress={(reading.toolWearMin / 250) * 100}
           description="Replace at: 250 min"
         />
       </div>
 
+      {/* Quick Actions */}
       <div className="grid gap-4 md:grid-cols-2">
-         <Card>
+        <Card>
           <CardHeader>
             <CardTitle>Quick Actions</CardTitle>
           </CardHeader>
@@ -202,7 +304,7 @@ export default function DashboardPage() {
                 <PlayCircle className="h-4 w-4" /> Manual Prediction
               </Link>
             </Button>
-            <Button variant="ghost" onClick={() => setIsLive(!isLive)}>
+            <Button variant="ghost" onClick={() => setIsLive((v) => !v)}>
               {isLive ? "Pause Stream" : "Resume Stream"}
             </Button>
           </CardContent>
