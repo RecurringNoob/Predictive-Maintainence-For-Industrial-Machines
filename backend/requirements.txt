@@ -5,7 +5,7 @@ uvicorn[standard]==0.30.6
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy==2.0.35
 asyncpg==0.30.0              # async PostgreSQL driver
-alembic==1.13.2               # DB migrations (future use)
+alembic==1.13.2              # DB migrations (future use)
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 pydantic==2.9.2
@@ -18,18 +18,17 @@ httpx==0.27.2
 apscheduler==3.10.4
 
 # ── ML ────────────────────────────────────────────────────────────────────────
-scikit-learn==1.6.1
-numpy==2.2.5
-pandas==2.2.3
+scikit-learn==1.4.2
+numpy==1.26.4
+pandas==2.2.2
+joblib==1.4.2
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest==8.3.3
 pytest-asyncio==0.24.0
 anyio==4.6.2
-httpx==0.27.2                 # also used by AsyncClient in tests
-aiosqlite==0.20.0             # SQLite async driver for test DB
+aiosqlite==0.20.0            # SQLite async driver for test DB
 
 # ── Linting / type-checking (dev only) ───────────────────────────────────────
 ruff==0.6.9
 mypy==1.11.2
-joblib==1.4.2
